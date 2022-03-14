@@ -1,7 +1,8 @@
 # set_hugepages
 It slices. It dices. It sets (and helps you properly size) a Linux huge pages memory reservation pool.
 
-    set_hugepages_sh [OPTIONS] -as SIZE
+##Usage
+    set_hugepages_sh [OPTIONS] -a[s SIZE]
     set_hugepages_sh [OPTIONS] -p PCT
       -a  Auto set huge pages reservation size (+5GB by default) above
           currently used huge pages allocation. Can be tuned with -s
