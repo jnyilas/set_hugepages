@@ -1,0 +1,179 @@
+#!/bin/bash
+
+## Joe Nyilas, crafted this
+
+# $Id: set_hugepages_sh,v 1.2 2022/03/14 17:31:04 jnyilas Exp $ 
+
+# Synopsis: It slices. It dices. It sets (and helps you properly size) a huge pages reservation pool.
+
+# Set Up Parameters
+# Set huge_pages to 50% of total RAM
+HUGE_RES=".50"
+# https://docs.oracle.com/en/cloud/cloud-at-customer/exadata-cloud-at-customer/exacc/manage-huge-pages.html
+# By default, just report and do not modify configuration
+CONFIG=0
+SET=0
+PCT=0
+AUTO=0
+
+usage()
+{
+	echo "$(basename "$0") [OPTIONS] -as SIZE" > /dev/stderr
+	echo "$(basename "$0") [OPTIONS] -p PCT" > /dev/stderr
+	echo "  -a  Auto set huge pages reservation size (+5GB by default) above" > /dev/stderr
+	echo "      currently used huge pages allocation. Can be tuned with -s" > /dev/stderr
+	echo "  -s  Set huge pages reservation size in units of MB, GB, or Pages." > /dev/stderr
+	echo "  -p  Set huge pages reservation size as a percentage of total RAM." > /dev/stderr
+	echo "  -c  Commit changes to /etc/systctl.conf and attempt to modify live kernel." > /dev/stderr
+}
+
+# Fetch Huge Page Details
+HUGE_PG_SZ=$(awk '/^Hugepagesize:/ {print $2}' /proc/meminfo)
+HUGE_PG_RS=$(awk '/^HugePages_Rsvd:/ {print $2}' /proc/meminfo)
+
+while getopts as:cp: i; do
+	case $i in
+		a)	#Auto calculate huge pages to 5G above current USED allocation
+			# 5G huge pages is: 5 * 1024*1024 bytes = 5242880
+			# at 2MB huge pages = 5242880 / 2048 = 2560 2M huge pages
+			AUTO=1
+			AUTO_SIZE_PG=2560
+			AUTO_SIZE_TMP=5G
+			;;
+		s)	#Set the Plus Auto Size given MB or GB or Pages target size
+			SET=1
+			AUTO_SIZE_TMP=${OPTARG}
+			;;
+		p)	#Calculate and set huge pages reservation as argv % of RAM
+			PCT=1
+			HUGE_RES=${OPTARG}
+			;;
+		c)	#Commit and Configure the proposed change and make it permanent in /etc/sysctl.conf
+			CONFIG=1
+			;;
+		*)	usage
+			exit 1
+			;;
+	esac
+done
+shift $(( OPTIND - 1 ))
+
+# Validation Tests
+if [[ "${SET}" -eq 1 && "${PCT}" -eq 1 ]]; then
+	echo "-s and -p are mutually exclusive options" > /dev/stderr
+	exit 1
+fi
+if [[ "${SET}" -eq 1 && "${AUTO}" -eq 0 ]]; then
+	echo "-s requires -a" > /dev/stderr
+	exit 1
+fi
+if [[ "${HUGE_PG_RS}" -eq "0" ]]; then
+	# Huge Pages are unused in running kernel
+	echo "Hugepages are not in use on this system" > /dev/stderr
+	exit 1
+fi
+
+if [[ "${HUGE_PG_SZ}" -ne "2048" ]]; then
+	# throw an error in default huge page size is unexpected
+	echo "Hugepagesize is not 2048KB" > /dev/stderr
+	exit 1
+fi
+
+if [[ -n "${AUTO_SIZE_TMP}" ]]; then
+	# Calculate specified "grow by" size
+	case "${AUTO_SIZE_TMP}" in
+		*M)	#MB
+			AUTO_SIZE_PG=$(( ${AUTO_SIZE_TMP%M} * 1024 / HUGE_PG_SZ ))
+			;;
+		*G)	#GB
+			AUTO_SIZE_PG=$(( ${AUTO_SIZE_TMP%G} * 1024 * 1024 / HUGE_PG_SZ ))
+			;;
+		*P)	#Pages
+			AUTO_SIZE_PG=${AUTO_SIZE_TMP%P}
+			;;
+		*)	echo "Please specify units suffix of M or G or P so proper huge page size can be calculated" > /dev/stderr
+			exit 1
+			;;
+	esac
+fi
+
+# Compute Reporting
+huge_pct=$(echo ''"${HUGE_RES}"' * 100' | bc -l) 
+ram_total=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
+ram_total_GB=$(echo "${ram_total}/1024/1024" | bc -l)
+
+# current size reserved in sysdef
+huge_pages_cur=$(awk '/HugePages_Total/ {print $2}' /proc/meminfo)
+huge_pages_cur_GB=$(echo "${huge_pages_cur}*2/1024" | bc -l)
+
+# computed value of huge pages of ram_total
+ram_pages_total=$(echo ''"${ram_total}"' / '"${HUGE_PG_SZ}"'' | bc -l) 
+
+# current reserved consumption
+huge_consumption=$(echo ''"${huge_pages_cur}"' / '"${ram_pages_total}"' * 100' | bc -l)
+
+# current actual usage
+huge_pages_free=$(awk '/HugePages_Free/ {print $2}' /proc/meminfo)
+huge_pages_free_GB=$(echo "${huge_pages_free}*2/1024" | bc -l)
+actual_used_pages=$((huge_pages_cur - huge_pages_free))
+actual_used_pages_GB=$(echo "${actual_used_pages}*2/1024" | bc -l)
+actual_huge_consumption=$(echo ''"${actual_used_pages}"' / '"${ram_pages_total}"' * 100' | bc -l)
+reserved_huge_consumption=$(echo ''"${actual_used_pages}"' / '"${huge_pages_cur}"' * 100' | bc -l)
+
+# New Values
+if [[ "${AUTO}" -eq 0 ]]; then
+	# Percentage or size based calculation
+	if [[ "${SET}" -eq 0 ]]; then
+		# Percentage
+		new_percent_of_total=$(echo ''"${ram_total}"' * '"${HUGE_RES}"'' | bc -l)
+		new_huge_pages=$(echo ''"${new_percent_of_total}"' / '"${HUGE_PG_SZ}"'' | bc -l) 
+		new_huge_pages=$(printf "%.0f" "${new_huge_pages}")
+		new_huge_pages_GB=$(echo "${new_huge_pages}*2/1024" | bc -l)
+	else
+		# Set Size
+		new_huge_pages=${AUTO_SIZE_PG}
+		new_huge_pages_GB=$(echo "${new_huge_pages}*2/1024" | bc -l)
+		huge_pct=$(echo ''"${new_huge_pages}"' / '"${ram_pages_total}"' * 100' | bc -l)
+	fi
+else
+	# current used++ size based calculation
+	new_huge_pages=$((actual_used_pages + AUTO_SIZE_PG))
+	new_huge_pages_GB=$(echo "${new_huge_pages}*2/1024" | bc -l)
+	new_huge_consumption=$(echo ''"${new_huge_pages}"' / '"${ram_pages_total}"' * 100' | bc -l)
+	new_huge_consumption=$(printf "%.0f" "${new_huge_consumption}")
+fi
+
+# Report
+printf "Huge Page size is: %d kB\n" "${HUGE_PG_SZ}"
+printf "Total Memory pages: %.0f  (%.1f GB)\n" "${ram_pages_total}" "${ram_total_GB}"
+printf "\n"
+printf "Current Settings:\n"
+printf "    Number of Huge Pages Reserved: %d  (%.1f GB)\n" "${huge_pages_cur}" "${huge_pages_cur_GB}"
+printf "    Percent of RAM Huge Pages Reserved: %.0f%%\n" "${huge_consumption}"
+printf "    Number of Huge Pages Free: %d  (%.1f GB)\n" "${huge_pages_free}" "${huge_pages_free_GB}"
+printf "    Number of Huge Pages *Actually* Used: %d  (%.1f GB)\n" "${actual_used_pages}" "${actual_used_pages_GB}"
+printf "    Percent of RAM Huge Pages *Actually* Used: %.0f%%\n" "${actual_huge_consumption}"
+printf "    Percent of Reserved Huge Pages *Actually* Used: %.0f%%\n" "${reserved_huge_consumption}"
+
+echo ""
+printf "Proposed Settings:\n"
+if [[ "${AUTO}" -eq 0 ]]; then
+	# percentage RAM based sizing
+	printf "    Based on %.3f%% of RAM proposed reservation:\n" "${huge_pct}"
+	printf "    Proposed Huge Pages: %d (%.1f GB)\n" "${new_huge_pages}" "${new_huge_pages_GB}"
+else
+	# automatic current allocation+ based
+	# sizing info argv
+	printf "    Based on automatically sizing (currently_used_huge_pages + %s):\n" "${AUTO_SIZE_TMP}"
+	printf "    Proposed Huge Pages: %d  (%.1f GB)\n" "${new_huge_pages}" "${new_huge_pages_GB}"
+	printf "    Proposed is equivalent to ${new_huge_consumption}%% RAM\n"
+fi
+
+# Apply as needed
+if [[ "${new_huge_pages}" -ne "${huge_pages_cur}" && ${CONFIG} -eq 1 ]]; then
+	echo "Committing configuration ..."
+	sed -i 's/^vm.nr_hugepages.*/vm.nr_hugepages = '${new_huge_pages}'/' /etc/sysctl.conf
+	sysctl -w vm.nr_hugepages=${new_huge_pages}
+fi
+
+exit 0
