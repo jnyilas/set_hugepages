@@ -2,7 +2,7 @@
 
 ## Joe Nyilas, crafted this
 
-# $Id: set_hugepages_sh,v 1.2 2022/03/14 17:31:04 jnyilas Exp $ 
+# $Id: set_hugepages_sh,v 1.3 2023/02/08 16:28:16 jnyilas Exp $ 
 
 # Synopsis: It slices. It dices. It sets (and helps you properly size) a huge pages reservation pool.
 
@@ -18,12 +18,19 @@ AUTO=0
 
 usage()
 {
-	echo "$(basename "$0") [OPTIONS] -as SIZE" > /dev/stderr
-	echo "$(basename "$0") [OPTIONS] -p PCT" > /dev/stderr
-	echo "  -a  Auto set huge pages reservation size (+5GB by default) above" > /dev/stderr
-	echo "      currently used huge pages allocation. Can be tuned with -s" > /dev/stderr
-	echo "  -s  Set huge pages reservation size in units of MB, GB, or Pages." > /dev/stderr
+	echo "$(basename "$0") {a[s]|s|p}[c] ARG" > /dev/stderr
+	echo "$(basename "$0") [-c] -p PCT" > /dev/stderr
+	echo "$(basename "$0") [-c] -s SIZE" > /dev/stderr
+	echo "$(basename "$0") [-c] -as SIZE" > /dev/stderr
+	echo "  -a  Auto set the huge pages reservation size (+5GB by default) above" > /dev/stderr
+	echo "      the currently used huge pages allocation. Can be tuned with -s" > /dev/stderr
+	echo "" > /dev/stderr
+	echo "  -s  Set huge pages reservation size in units of (M)B, (G)B, or (P)ages." > /dev/stderr
+	echo "      If used without -a, it sets an absolute huge pages reservation size." > /dev/stderr
+	echo "" > /dev/stderr
 	echo "  -p  Set huge pages reservation size as a percentage of total RAM." > /dev/stderr
+	echo "      Expressed as a decimal value. E.G., argument .50 indicates 50 percent of RAM." > /dev/stderr
+	echo "" > /dev/stderr
 	echo "  -c  Commit changes to /etc/systctl.conf and attempt to modify live kernel." > /dev/stderr
 }
 
@@ -64,8 +71,7 @@ if [[ "${SET}" -eq 1 && "${PCT}" -eq 1 ]]; then
 	exit 1
 fi
 if [[ "${SET}" -eq 1 && "${AUTO}" -eq 0 ]]; then
-	echo "-s requires -a" > /dev/stderr
-	exit 1
+	echo "Setting absolute size" > /dev/stderr
 fi
 if [[ "${HUGE_PG_RS}" -eq "0" ]]; then
 	# Huge Pages are unused in running kernel
