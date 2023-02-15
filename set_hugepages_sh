@@ -2,11 +2,10 @@
 
 ## Joe Nyilas, crafted this
 
-# $Id: set_hugepages_sh,v 1.5 2023/02/10 17:41:38 jnyilas Exp $ 
-
+# $Id: set_hugepages_sh,v 1.6 2023/02/15 17:15:30 jnyilas Exp $ 
 # Synopsis: It slices. It dices. It sets (and helps you properly size) a huge pages reservation pool.
 
-# Set Up Parameters
+### Set Up Parameters
 # Set huge_pages to 50% of total RAM
 HUGE_RES=".50"
 # https://docs.oracle.com/en/cloud/cloud-at-customer/exadata-cloud-at-customer/exacc/manage-huge-pages.html
@@ -16,10 +15,13 @@ LIVE_CONFIG=0
 SET=0
 PCT=0
 AUTO=0
+QUIET=0
+VERBOSE=0
+###
 
 usage()
 {
-	echo "$(basename "$0") {a[s]|s|p} ARG [cC]" > /dev/stderr
+	echo "$(basename "$0") {a[s]|s|p} ARG [cCqv]" > /dev/stderr
 	echo "$(basename "$0") [-c] -p PCT" > /dev/stderr
 	echo "$(basename "$0") [-c] -s SIZE" > /dev/stderr
 	echo "$(basename "$0") [-c] -as SIZE" > /dev/stderr
@@ -35,13 +37,17 @@ usage()
 	echo "  -c  Commit changes to /etc/systctl.conf only." > /dev/stderr
 	echo "" > /dev/stderr
 	echo "  -C  Commit changes to /etc/systctl.conf and attempt to modify live kernel with 'sysctl(8)'." > /dev/stderr
+	echo "" > /dev/stderr
+	echo "  -q  Be quieter." > /dev/stderr
+	echo "" > /dev/stderr
+	echo "  -v  Explore additional modeling around the proposed changes." > /dev/stderr
 }
 
 # Fetch Huge Page Details
 HUGE_PG_SZ=$(awk '/^Hugepagesize:/ {print $2}' /proc/meminfo)
 HUGE_PG_RS=$(awk '/^HugePages_Rsvd:/ {print $2}' /proc/meminfo)
 
-while getopts as:cCp: i; do
+while getopts as:cCp:qv i; do
 	case $i in
 		a)	#Auto calculate huge pages to 5G above current USED allocation
 			# 5G huge pages is: 5 * 1024*1024 bytes = 5242880
@@ -61,8 +67,14 @@ while getopts as:cCp: i; do
 		c)	#Commit and Configure the proposed change and make it permanent in /etc/sysctl.conf
 			CONFIG=1
 			;;
-		C)	#Commit and Configure the proposed change and make it permanent in /etc/sysctl.conf
+		C)	#Commit and Configure the proposed change and make it permanent in /etc/sysctl.conf and attempt sysctl -w
 			LIVE_CONFIG=1
+			;;
+		q)	#Be (mostly) quiet
+			QUIET=1
+			;;
+		v)	#Provide extra modeling details around changes
+			VERBOSE=1
 			;;
 		*)	usage
 			exit 1
@@ -76,9 +88,7 @@ if [[ "${SET}" -eq 1 && "${PCT}" -eq 1 ]]; then
 	echo "-s and -p are mutually exclusive options" > /dev/stderr
 	exit 1
 fi
-if [[ "${SET}" -eq 1 && "${AUTO}" -eq 0 ]]; then
-	echo "Setting absolute size" > /dev/stderr
-fi
+
 if [[ "${HUGE_PG_RS}" -eq "0" ]]; then
 	# Huge Pages are unused in running kernel
 	echo "Hugepages are not in use on this system" > /dev/stderr
@@ -134,7 +144,8 @@ reserved_huge_consumption=$(echo ''"${actual_used_pages}"' / '"${huge_pages_cur}
 
 # New Values
 if [[ "${AUTO}" -eq 0 ]]; then
-	# Percentage or size based calculation
+	# Not AutoSized
+	# Percentage or absolute size based calculation
 	if [[ "${SET}" -eq 0 ]]; then
 		# Percentage
 		new_percent_of_total=$(echo ''"${ram_total}"' * '"${HUGE_RES}"'' | bc -l)
@@ -148,6 +159,7 @@ if [[ "${AUTO}" -eq 0 ]]; then
 		huge_pct=$(echo ''"${new_huge_pages}"' / '"${ram_pages_total}"' * 100' | bc -l)
 	fi
 else
+	# AutoSized
 	# current used++ size based calculation
 	new_huge_pages=$((actual_used_pages + AUTO_SIZE_PG))
 	new_huge_pages_GB=$(echo "${new_huge_pages}*2/1024" | bc -l)
@@ -155,38 +167,64 @@ else
 	new_huge_consumption=$(printf "%.0f" "${new_huge_consumption}")
 fi
 
-# Report
-printf "Huge Page size is: %d kB\n" "${HUGE_PG_SZ}"
-printf "Total Memory pages: %.0f  (%.1f GB)\n" "${ram_pages_total}" "${ram_total_GB}"
-printf "\n"
-printf "Current Settings:\n"
-printf "    Number of Huge Pages Reserved: %d  (%.1f GB)\n" "${huge_pages_cur}" "${huge_pages_cur_GB}"
-printf "    Percent of RAM Huge Pages Reserved: %.0f%%\n" "${huge_consumption}"
-printf "    Number of Huge Pages Free: %d  (%.1f GB)\n" "${huge_pages_free}" "${huge_pages_free_GB}"
-printf "    Number of Huge Pages *Actually* Used: %d  (%.1f GB)\n" "${actual_used_pages}" "${actual_used_pages_GB}"
-printf "    Percent of RAM Huge Pages *Actually* Used: %.0f%%\n" "${actual_huge_consumption}"
-printf "    Percent of Reserved Huge Pages *Actually* Used: %.0f%%\n" "${reserved_huge_consumption}"
-
-echo ""
-printf "Proposed Settings:\n"
-if [[ "${AUTO}" -eq 0 ]]; then
-	# percentage RAM based sizing
-	printf "    Based on %.3f%% of RAM proposed reservation:\n" "${huge_pct}"
-	printf "    Proposed Huge Pages: %d (%.1f GB)\n" "${new_huge_pages}" "${new_huge_pages_GB}"
-else
-	# automatic current allocation+ based
-	# sizing info argv
-	printf "    Based on automatically sizing (currently_used_huge_pages + %s):\n" "${AUTO_SIZE_TMP}"
-	printf "    Proposed Huge Pages: %d  (%.1f GB)\n" "${new_huge_pages}" "${new_huge_pages_GB}"
-	printf "    Proposed is equivalent to ${new_huge_consumption}%% RAM\n"
+if [[ "${QUIET}" -eq 0 ]]; then
+	# Normal Report
+	printf "Current Configuration:\n"
+	printf "  HugePage page size is: %d kB\n" "${HUGE_PG_SZ}"
+	printf "  Total RAM Memory pages: %.0f  (%.1f GB)\n" "${ram_pages_total}" "${ram_total_GB}"
+	printf "  HugePages Reserved: %d  (%.1f GB)\n" "${huge_pages_cur}" "${huge_pages_cur_GB}"
+	printf "\n"
+	printf "Current Capacity Analysis:\n"
+	printf "  HugePages Reserved as percentage of RAM: %.0f%%\n" "${huge_consumption}"
+	printf "  HugePages Free: %d  (%.1f GB)\n" "${huge_pages_free}" "${huge_pages_free_GB}"
+	printf "  HugePages Used: %d  (%.1f GB)\n" "${actual_used_pages}" "${actual_used_pages_GB}"
+	printf "  HugePages Used as percentage of RAM: %.0f%%\n" "${actual_huge_consumption}"
+	printf "  HugePages Used as a percentage of HugePages Reserved: %.0f%%\n" "${reserved_huge_consumption}"
+	printf "\n"
 fi
 
-# Apply as needed
+if [[ "${QUIET}" -eq 0 ]]; then
+	printf "Proposed Settings:\n"
+
+	if [[ "${AUTO}" -eq 0 ]]; then
+		# Normal Report AutoTuning
+		# percentage RAM based sizing
+		printf "  Based on %.3f%% of RAM proposed reservation:\n" "${huge_pct}"
+		printf "  Proposed HugePages: %d (%.1f GB)\n" "${new_huge_pages}" "${new_huge_pages_GB}"
+	else
+		# automatic current allocation+ based
+		# sizing info argv
+		printf " Based on automatically sizing (currently_used_huge_pages + %s) --\n" "${AUTO_SIZE_TMP}"
+		printf "  Proposed HugePages: %d  (%.1f GB)\n" "${new_huge_pages}" "${new_huge_pages_GB}"
+		printf "  Proposed is equivalent to ${new_huge_consumption}%% RAM\n"
+	fi
+
+	if [[ "${VERBOSE}" -eq 1 ]]; then
+		# Verbose Report Modeling
+		modeled_huge_pages_free=$((new_huge_pages - actual_used_pages))
+		modeled_huge_pages_free_GB=$(echo "${modeled_huge_pages_free}*2/1024" | bc -l)
+		modeled_reserved_huge_consumption=$(echo ''"${actual_used_pages}"' / '"${new_huge_pages}"' * 100' | bc -l)
+		printf "\n"
+		printf "Proposed Capacity Analysis:\n"
+		printf " Modeling with current HugePages consumption (%.1f GB) --\n" "${actual_used_pages_GB}"
+		printf "  (modeled) HugePages Free: %d  (%.1f GB)\n" "${modeled_huge_pages_free}" "${modeled_huge_pages_free_GB}"
+		printf "  (modeled) HugePages Used as a percentage of HugePages Reserved: %.0f%%\n" "${modeled_reserved_huge_consumption}"
+	fi
+else
+		# Quiet Report
+		printf "  Proposed HugePages: %d (%.1f GB)\n" "${new_huge_pages}" "${new_huge_pages_GB}"
+fi
+
+# Apply settings, as requested
 if [[ "${new_huge_pages}" -ne "${huge_pages_cur}" && ${CONFIG} -eq 1 ]]; then
-	echo "Committing configuration only to /etc/sysctl.conf ..."
+	if [[ "${QUIET}" -eq 0 ]]; then
+		echo "Committing configuration only to /etc/sysctl.conf ..."
+	fi
 	sed -i 's/^vm.nr_hugepages.*/vm.nr_hugepages = '${new_huge_pages}'/' /etc/sysctl.conf
 elif [[ "${new_huge_pages}" -ne "${huge_pages_cur}" && ${LIVE_CONFIG} -eq 1 ]]; then
-	echo "Committing configuration to /etc/sysctl.conf and modifying live kernel ..."
+	if [[ "${QUIET}" -eq 0 ]]; then
+		echo "Committing configuration to /etc/sysctl.conf and modifying live kernel ..."
+	fi
 	sed -i 's/^vm.nr_hugepages.*/vm.nr_hugepages = '${new_huge_pages}'/' /etc/sysctl.conf
 	sysctl -w vm.nr_hugepages=${new_huge_pages}
 fi
