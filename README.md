@@ -2,7 +2,7 @@
 It slices. It dices. It sets (and helps you properly size) a Linux huge pages memory reservation pool.
 
 ## Usage
-    set_hugepages_sh {a[s]|s|p} ARG [cC]
+    set_hugepages_sh {a[s]|s|p} ARG [cCqv]
     set_hugepages_sh [-c|C] -p PCT
     set_hugepages_sh [-c|C] -s SIZE
     set_hugepages_sh [-c|C] -as SIZE
@@ -19,6 +19,9 @@ It slices. It dices. It sets (and helps you properly size) a Linux huge pages me
 
        -C  Commit changes to /etc/systctl.conf and attempt to modify live kernel with 'sysctl(8)'.
        
+       -q  Be quieter.
+        
+       -v  Explore additional modeling around the proposed changes.
 ## Reporting
 With no options, it defaults to modeling a 50% RAM huge pages reservation scenario:
 
@@ -155,7 +158,7 @@ Let's save this so it will be implemented on the next node reboot:
         Proposed Huge Pages: 25600 (50.0 GB)
     Committing configuration only to /etc/sysctl.conf ...
     
-Oh wait! Let's just have 'sysctl' try and set it for us live and modify the running kernel without a reboot.  
+Oh wait! Let's also have 'sysctl' try and set it for us live and modify the running kernel without a reboot.  
 When **growing** the huge pages reservation -- _Warning, this may run very slowly or not finish at all, depending on how fragmented and how many memory pages are truly "free"._  
 When **shrinking** the huge pages reservation, not a problem!
     
