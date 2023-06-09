@@ -2,8 +2,24 @@
 
 ## Joe Nyilas, crafted this
 
-# $Id: set_hugepages_sh,v 1.6 2023/02/15 17:15:30 jnyilas Exp $ 
+# $Id: set_hugepages_sh,v 1.9 2023/06/09 15:23:44 jnyilas Exp $ 
 # Synopsis: It slices. It dices. It sets (and helps you properly size) a huge pages reservation pool.
+
+##
+# This is from the kernel source. https://www.kernel.org/doc/Documentation/vm/hugetlbpage.txt
+#HugePages_Total is the size of the pool of huge pages.
+#HugePages_Free  is the number of huge pages in the pool that are not yet
+#                allocated.
+#HugePages_Rsvd  is short for "reserved," and is the number of huge pages for
+#                which a commitment to allocate from the pool has been made,
+#                but no allocation has yet been made.  Reserved huge pages
+#                guarantee that an application will be able to allocate a
+#                huge page from the pool of huge pages at fault time.
+#HugePages_Surp  is short for "surplus," and is the number of huge pages in
+#                the pool above the value in /proc/sys/vm/nr_hugepages. The
+#                maximum number of surplus huge pages is controlled by
+#                /proc/sys/vm/nr_overcommit_hugepages.
+##
 
 ### Set Up Parameters
 # Set huge_pages to 50% of total RAM
@@ -43,9 +59,9 @@ usage()
 	echo "  -v  Explore additional modeling around the proposed changes." > /dev/stderr
 }
 
-# Fetch Huge Page Details
+# Pre-check fetch Huge Page Details
 HUGE_PG_SZ=$(awk '/^Hugepagesize:/ {print $2}' /proc/meminfo)
-HUGE_PG_RS=$(awk '/^HugePages_Rsvd:/ {print $2}' /proc/meminfo)
+HUGE_PG_TO=$(awk '/^HugePages_Total:/ {print $2}' /proc/meminfo)
 
 while getopts as:cCp:qv i; do
 	case $i in
@@ -89,7 +105,7 @@ if [[ "${SET}" -eq 1 && "${PCT}" -eq 1 ]]; then
 	exit 1
 fi
 
-if [[ "${HUGE_PG_RS}" -eq "0" ]]; then
+if [[ "${HUGE_PG_TO}" -eq "0" ]]; then
 	# Huge Pages are unused in running kernel
 	echo "Hugepages are not in use on this system" > /dev/stderr
 	exit 1
@@ -126,7 +142,7 @@ ram_total_GB=$(echo "${ram_total}/1024/1024" | bc -l)
 
 # current size reserved in sysdef
 huge_pages_cur=$(awk '/HugePages_Total/ {print $2}' /proc/meminfo)
-huge_pages_cur_GB=$(echo "${huge_pages_cur}*2/1024" | bc -l)
+huge_pages_cur_GB=$(echo "${huge_pages_cur}*${HUGE_PG_SZ}/1024^2" | bc -l)
 
 # computed value of huge pages of ram_total
 ram_pages_total=$(echo ''"${ram_total}"' / '"${HUGE_PG_SZ}"'' | bc -l) 
@@ -136,9 +152,9 @@ huge_consumption=$(echo ''"${huge_pages_cur}"' / '"${ram_pages_total}"' * 100' |
 
 # current actual usage
 huge_pages_free=$(awk '/HugePages_Free/ {print $2}' /proc/meminfo)
-huge_pages_free_GB=$(echo "${huge_pages_free}*2/1024" | bc -l)
+huge_pages_free_GB=$(echo "${huge_pages_free}*${HUGE_PG_SZ}/1024^2" | bc -l)
 actual_used_pages=$((huge_pages_cur - huge_pages_free))
-actual_used_pages_GB=$(echo "${actual_used_pages}*2/1024" | bc -l)
+actual_used_pages_GB=$(echo "${actual_used_pages}*${HUGE_PG_SZ}/1024^2" | bc -l)
 actual_huge_consumption=$(echo ''"${actual_used_pages}"' / '"${ram_pages_total}"' * 100' | bc -l)
 reserved_huge_consumption=$(echo ''"${actual_used_pages}"' / '"${huge_pages_cur}"' * 100' | bc -l)
 
@@ -151,18 +167,18 @@ if [[ "${AUTO}" -eq 0 ]]; then
 		new_percent_of_total=$(echo ''"${ram_total}"' * '"${HUGE_RES}"'' | bc -l)
 		new_huge_pages=$(echo ''"${new_percent_of_total}"' / '"${HUGE_PG_SZ}"'' | bc -l) 
 		new_huge_pages=$(printf "%.0f" "${new_huge_pages}")
-		new_huge_pages_GB=$(echo "${new_huge_pages}*2/1024" | bc -l)
+		new_huge_pages_GB=$(echo "${new_huge_pages}*${HUGE_PG_SZ}/1024^2" | bc -l)
 	else
 		# Set Size
 		new_huge_pages=${AUTO_SIZE_PG}
-		new_huge_pages_GB=$(echo "${new_huge_pages}*2/1024" | bc -l)
+		new_huge_pages_GB=$(echo "${new_huge_pages}*${HUGE_PG_SZ}/1024^2" | bc -l)
 		huge_pct=$(echo ''"${new_huge_pages}"' / '"${ram_pages_total}"' * 100' | bc -l)
 	fi
 else
 	# AutoSized
 	# current used++ size based calculation
 	new_huge_pages=$((actual_used_pages + AUTO_SIZE_PG))
-	new_huge_pages_GB=$(echo "${new_huge_pages}*2/1024" | bc -l)
+	new_huge_pages_GB=$(echo "${new_huge_pages}*${HUGE_PG_SZ}/1024^2" | bc -l)
 	new_huge_consumption=$(echo ''"${new_huge_pages}"' / '"${ram_pages_total}"' * 100' | bc -l)
 	new_huge_consumption=$(printf "%.0f" "${new_huge_consumption}")
 fi
@@ -179,7 +195,7 @@ if [[ "${QUIET}" -eq 0 ]]; then
 	printf "  HugePages Free: %d  (%.1f GB)\n" "${huge_pages_free}" "${huge_pages_free_GB}"
 	printf "  HugePages Used: %d  (%.1f GB)\n" "${actual_used_pages}" "${actual_used_pages_GB}"
 	printf "  HugePages Used as percentage of RAM: %.0f%%\n" "${actual_huge_consumption}"
-	printf "  HugePages Used as a percentage of HugePages Reserved: %.0f%%\n" "${reserved_huge_consumption}"
+	printf "  HugePages Used as percentage of HugePages Reserved: %.0f%%\n" "${reserved_huge_consumption}"
 	printf "\n"
 fi
 
@@ -202,13 +218,13 @@ if [[ "${QUIET}" -eq 0 ]]; then
 	if [[ "${VERBOSE}" -eq 1 ]]; then
 		# Verbose Report Modeling
 		modeled_huge_pages_free=$((new_huge_pages - actual_used_pages))
-		modeled_huge_pages_free_GB=$(echo "${modeled_huge_pages_free}*2/1024" | bc -l)
+		modeled_huge_pages_free_GB=$(echo "${modeled_huge_pages_free}*${HUGE_PG_SZ}/1024^2" | bc -l)
 		modeled_reserved_huge_consumption=$(echo ''"${actual_used_pages}"' / '"${new_huge_pages}"' * 100' | bc -l)
 		printf "\n"
 		printf "Proposed Capacity Analysis:\n"
 		printf " Modeling with current HugePages consumption (%.1f GB) --\n" "${actual_used_pages_GB}"
 		printf "  (modeled) HugePages Free: %d  (%.1f GB)\n" "${modeled_huge_pages_free}" "${modeled_huge_pages_free_GB}"
-		printf "  (modeled) HugePages Used as a percentage of HugePages Reserved: %.0f%%\n" "${modeled_reserved_huge_consumption}"
+		printf "  (modeled) HugePages Used as percentage of HugePages Reserved: %.0f%%\n" "${modeled_reserved_huge_consumption}"
 	fi
 else
 		# Quiet Report
@@ -226,6 +242,9 @@ elif [[ "${new_huge_pages}" -ne "${huge_pages_cur}" && ${LIVE_CONFIG} -eq 1 ]]; 
 		echo "Committing configuration to /etc/sysctl.conf and modifying live kernel ..."
 	fi
 	sed -i 's/^vm.nr_hugepages.*/vm.nr_hugepages = '${new_huge_pages}'/' /etc/sysctl.conf
+	#sync the initramfs image file's sysctl.conf
+	cp /boot/initramfs-"$(uname -r)".img /scratch/initramfs-"$(uname -r)".img.bak
+	dracut --force
 	sysctl -w vm.nr_hugepages=${new_huge_pages}
 fi
 
