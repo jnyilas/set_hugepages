@@ -3,9 +3,9 @@ It slices. It dices. It sets (and helps you properly size) a Linux huge pages me
 
 ## Usage
     set_hugepages_sh {a[s]|s|p} ARG [cCqv]
-    set_hugepages_sh [-c|C] -p PCT
-    set_hugepages_sh [-c|C] -s SIZE
-    set_hugepages_sh [-c|C] -as SIZE
+    set_hugepages_sh [-c|C|L] -p PCT
+    set_hugepages_sh [-c|C|L] -s SIZE
+    set_hugepages_sh [-c|C|L] -as SIZE
        -a  Auto set the huge pages reservation size (+5GB by default) above
            the currently used huge pages allocation. Can be tuned with -s
 
@@ -18,6 +18,8 @@ It slices. It dices. It sets (and helps you properly size) a Linux huge pages me
        -c  Commit changes to /etc/systctl.conf only.
 
        -C  Commit changes to /etc/systctl.conf and attempt to modify live kernel with 'sysctl(8)'.
+
+       -L  Just  attempt to modify live kernel with 'sysctl(8)' without making the change persistent.
        
        -q  Be quieter.
         
@@ -160,7 +162,7 @@ Let's save this so it will be implemented on the next node reboot:
     
 Oh wait! Let's also have 'sysctl' try and set it for us live and modify the running kernel without a reboot.  
 When **growing** the huge pages reservation -- _Warning, this may run very slowly or not finish at all, depending on how fragmented and how many memory pages are truly "free"._  
-When **shrinking** the huge pages reservation, not a problem!
+However, when **shrinking** the huge pages reservation, this is not a problem, and the freeing of memory is a very quick operation.
     
     # ./set_hugepages_sh  -s 50G -C
     Setting absolute size
