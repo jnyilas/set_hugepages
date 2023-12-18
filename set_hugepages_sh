@@ -2,7 +2,7 @@
 
 ## Joe Nyilas, crafted this
 
-# $Id: set_hugepages_sh,v 1.9 2023/06/09 15:23:44 jnyilas Exp $ 
+# $Id: set_hugepages_sh,v 1.10 2023/12/18 15:56:49 jnyilas Exp $ 
 # Synopsis: It slices. It dices. It sets (and helps you properly size) a huge pages reservation pool.
 
 ##
@@ -28,6 +28,7 @@ HUGE_RES=".50"
 # By default, just report and do not modify configuration
 CONFIG=0
 LIVE_CONFIG=0
+LIVE_CONFIG_ONLY=0
 SET=0
 PCT=0
 AUTO=0
@@ -37,10 +38,10 @@ VERBOSE=0
 
 usage()
 {
-	echo "$(basename "$0") {a[s]|s|p} ARG [cCqv]" > /dev/stderr
-	echo "$(basename "$0") [-c] -p PCT" > /dev/stderr
-	echo "$(basename "$0") [-c] -s SIZE" > /dev/stderr
-	echo "$(basename "$0") [-c] -as SIZE" > /dev/stderr
+	echo "$(basename "$0") {a[s]|s|p} ARG [cCLqv]" > /dev/stderr
+	echo "$(basename "$0") [-c|C|L] -p PCT" > /dev/stderr
+	echo "$(basename "$0") [-c|C|L] -s SIZE" > /dev/stderr
+	echo "$(basename "$0") [-c|C|L] -as SIZE" > /dev/stderr
 	echo "  -a  Auto set the huge pages reservation size (+5GB by default) above" > /dev/stderr
 	echo "      the currently used huge pages allocation. Can be tuned with -s" > /dev/stderr
 	echo "" > /dev/stderr
@@ -54,6 +55,8 @@ usage()
 	echo "" > /dev/stderr
 	echo "  -C  Commit changes to /etc/systctl.conf and attempt to modify live kernel with 'sysctl(8)'." > /dev/stderr
 	echo "" > /dev/stderr
+	echo "  -L  Just  attempt to modify live kernel with 'sysctl(8)' without making the change persistent." > /dev/stderr
+	echo "" > /dev/stderr
 	echo "  -q  Be quieter." > /dev/stderr
 	echo "" > /dev/stderr
 	echo "  -v  Explore additional modeling around the proposed changes." > /dev/stderr
@@ -63,13 +66,12 @@ usage()
 HUGE_PG_SZ=$(awk '/^Hugepagesize:/ {print $2}' /proc/meminfo)
 HUGE_PG_TO=$(awk '/^HugePages_Total:/ {print $2}' /proc/meminfo)
 
-while getopts as:cCp:qv i; do
+while getopts as:cCLp:qv i; do
 	case $i in
 		a)	#Auto calculate huge pages to 5G above current USED allocation
 			# 5G huge pages is: 5 * 1024*1024 bytes = 5242880
 			# at 2MB huge pages = 5242880 / 2048 = 2560 2M huge pages
 			AUTO=1
-			AUTO_SIZE_PG=2560
 			AUTO_SIZE_TMP=5G
 			;;
 		s)	#Set the Plus Auto Size given MB or GB or Pages target size
@@ -85,6 +87,9 @@ while getopts as:cCp:qv i; do
 			;;
 		C)	#Commit and Configure the proposed change and make it permanent in /etc/sysctl.conf and attempt sysctl -w
 			LIVE_CONFIG=1
+			;;
+		L)	#just attempt sysctl -w
+			LIVE_CONFIG_ONLY=1
 			;;
 		q)	#Be (mostly) quiet
 			QUIET=1
@@ -107,7 +112,7 @@ fi
 
 if [[ "${HUGE_PG_TO}" -eq "0" ]]; then
 	# Huge Pages are unused in running kernel
-	echo "Hugepages are not in use on this system" > /dev/stderr
+	echo "HugePages are not in use on this system" > /dev/stderr
 	exit 1
 fi
 
@@ -237,6 +242,9 @@ if [[ "${new_huge_pages}" -ne "${huge_pages_cur}" && ${CONFIG} -eq 1 ]]; then
 		echo "Committing configuration only to /etc/sysctl.conf ..."
 	fi
 	sed -i 's/^vm.nr_hugepages.*/vm.nr_hugepages = '${new_huge_pages}'/' /etc/sysctl.conf
+elif [[ ${LIVE_CONFIG_ONLY} -eq 1 ]]; then
+	echo "Modifying live kernel, with without making this a persistent chnage..."
+	sysctl -w vm.nr_hugepages=${new_huge_pages}
 elif [[ "${new_huge_pages}" -ne "${huge_pages_cur}" && ${LIVE_CONFIG} -eq 1 ]]; then
 	if [[ "${QUIET}" -eq 0 ]]; then
 		echo "Committing configuration to /etc/sysctl.conf and modifying live kernel ..."
